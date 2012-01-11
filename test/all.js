@@ -10,6 +10,8 @@ exports['test thenable'] = require('./thenable');
 exports['test spread'] = require('./spread');
 exports['test node'] = require('./node');
 
+exports['test logging:friendly'] = require('./log-friendly');
+
 exports['test GH issue 9'] = require('./issue/9');
 exports['test GH issue 22'] = require('./issue/22');
 

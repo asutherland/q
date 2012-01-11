@@ -137,6 +137,392 @@ var valueOf = function (value) {
  */
 exports.nextTick = nextTick;
 
+
+////////////////////////////////////////////////////////////////////////////////
+// Logging Support
+
+var trace_defer = null,
+    trace_resolve = null,
+    trace_reject = null,
+    trace_exception = null,
+    trace_send_issue = null,
+    trace_before_run = null,
+    trace_after_run = null;
+
+exports.loggingDisable = function() {
+  trace_defer = null;
+  trace_resolve = null;
+  trace_reject = null;
+  trace_exception = null;
+  trace_send_issue = null;
+  trace_before_run = null;
+  trace_after_run = null;
+};
+
+
+////////////////////////////////////////////////////////////////////////////////
+// Causeway Logging Support
+//
+// Anchors: We imitate JS causeway's instrument.js.  The anchor always uses a
+//  number of 1, its turn always uses the same loop id, and the turn's number
+//  increments every time a log entry is generated.
+//
+
+var causeway_log = null,
+    causeway_turn_loop = 'L0',
+    causeway_turn_num = 0, causeway_num_this_turn = 1,
+    // id's issued for deferreds and messages
+    causeway_id = 0,
+    causeway_capture_stack, causeway_transform_stack,
+    causeway_active_runs = [];
+
+function causeway_normalize_reason(reason) {
+  return reason;
+}
+
+function causeway_trace_defer(deferred, annotation) {
+  deferred.annotation = annotation;
+  deferred._causeway_id = 'C' + causeway_id++;
+  deferred._causeway_done = false;
+}
+var CAUSEWAY_RESOLVED_CLASSES = ["org.ref_send.log.Fulfilled",
+                                 "org.ref_send.log.Resolved",
+                                 "org.ref_send.log.Event"];
+function causeway_trace_resolve(deferred, value) {
+  // if this deferred was rejected, this is not a fulfillment
+  if (deferred._causeway_done)
+    return ['M' + causeway_id++, causeway_capture_stack()];
+  causeway_log.push({
+    "class": CAUSEWAY_RESOLVED_CLASSES,
+    anchor: {
+      number: causeway_num_this_turn++,
+      turn: {
+        loop: causeway_turn_loop,
+        number: causeway_turn_num,
+      }
+    },
+    timestamp: Date.now(),
+    trace: causeway_capture_stack(),
+    condition: deferred._causeway_id
+  });
+  return ['M' + causeway_id++, causeway_capture_stack()];
+}
+var CAUSEWAY_REJECTED_CLASSES = ["org.ref_send.log.Rejected",
+                                 "org.ref_send.log.Resolved",
+                                 "org.ref_send.log.Event"];
+function causeway_trace_reject(deferred, reason) {
+  deferred._causeway_done = true;
+  causeway_log.push({
+    "class": CAUSEWAY_REJECTED_CLASSES,
+    anchor: {
+      number: causeway_num_this_turn++,
+      turn: {
+        loop: causeway_turn_loop,
+        number: causeway_turn_num,
+      }
+    },
+    timestamp: Date.now(),
+    trace: causeway_capture_stack(),
+    condition: deferred._causeway_id,
+    reason: causeway_normalize_reason(reason)
+  });
+}
+var CAUSEWAY_PROBLEM_CLASSES = ["org.ref_send.log.Problem",
+                                "org.ref_send.log.Comment",
+                                "org.ref_send.log.Event"];
+function causeway_trace_exception(deferred, exception, during, value) {
+  causeway_log.push({
+    "class": CAUSEWAY_PROBLEM_CLASSES,
+    anchor: {
+      number: causeway_num_this_turn++,
+      turn: {
+        loop: causeway_turn_loop,
+        number: causeway_turn_num,
+      }
+    },
+    timestamp: Date.now(),
+    trace: causeway_transform_stack(exception),
+    text: exception.message,
+    reason: {
+      "class": ["Error"]
+    }
+  });
+}
+var CAUSEWAY_SENT_CLASSES = ["org.ref_send.log.Sent",
+                             "org.ref_send.log.Event"];
+function causeway_trace_send_issue(deferred, value, args) {
+  var msgId = 'M' + causeway_id++, stack = causeway_capture_stack(), rec;
+  causeway_log.push(rec = {
+    "class": CAUSEWAY_SENT_CLASSES,
+    anchor: {
+      number: causeway_num_this_turn++,
+      turn: {
+        loop: causeway_turn_loop,
+        number: causeway_turn_num,
+      }
+    },
+    timestamp: Date.now(),
+    trace: stack,
+    condition: deferred._causeway_id,
+    message: msgId
+  });
+  if (deferred.annotation) {
+    // the causality grid uses a fix [length - 2] subscripting for major type
+    //  detection, so let's avoid changing its logic for now.
+    //rec["class"].push("org.ref_send.log.Comment");
+    rec.text = deferred.annotation;
+  }
+  return [msgId, stack];
+}
+var CAUSEWAY_GOT_CLASSES = ["org.ref_send.log.Got",
+                            "org.ref_send.log.Event"];
+function causeway_trace_before_run(trace_context, deferred, value, args) {
+  // if anything happened in the current turn, we need a new turn number
+  if (causeway_num_this_turn > 1) {
+    causeway_turn_num++;
+    causeway_num_this_turn = 1;
+  }
+
+  causeway_active_runs.push(deferred);
+  causeway_log.push({
+    "class": CAUSEWAY_GOT_CLASSES,
+    anchor: {
+      number: causeway_num_this_turn++,
+      turn: {
+        loop: causeway_turn_loop,
+        number: causeway_turn_num,
+      }
+    },
+    timestamp: Date.now(),
+    trace: trace_context[1],
+    message: trace_context[0],
+  });
+}
+var CAUSEWAY_DONE_CLASSES = ["org.ref_send.log.Done",
+                             "org.ref_send.log.Event"];
+function causeway_trace_after_run(trace_context, deferred, value, args) {
+  causeway_active_runs.pop();
+  causeway_log.push({
+    "class": CAUSEWAY_DONE_CLASSES,
+    anchor: {
+      number: causeway_num_this_turn++,
+      turn: {
+        loop: causeway_turn_loop,
+        number: causeway_turn_num,
+      }
+    },
+    timestamp: Date.now(),
+  });
+  // Since we are 'losing control' of the event loop, be sure to increment the
+  //  turn.
+  causeway_turn_num++;
+  causeway_num_this_turn = 1;
+}
+
+function causeway_transform_v8_stack(ex) {
+  var frames = ex.stack, calls = [];
+  for (var i = 0; i < frames.length; i++) {
+    var frame = frames[i];
+    // from http://code.google.com/p/causeway/
+    //        src/js/com/teleometry/causeway/log/html/instrument.js
+    calls.push({
+        name: frame.getFunctionName() ||
+              (frame.getTypeName() + '.' + (frame.getMethodName() || '')),
+        source: /^[^?#]*/.exec(frame.getFileName())[0], // ^ OK on URL
+        span: [ [ frame.getLineNumber(), frame.getColumnNumber() ] ]
+      });
+  }
+  return {
+    calls: calls
+  };
+}
+function causeway_transform_spidermonkey_stack(ex) {
+  var sframes = ex.stack.split("\n"), calls = [], match;
+  for (var i = 0; i < sframes.length; i++) {
+    if ((match = /^(.*)@(.+):(\d+)$/.exec(sframes[i]))) {
+      frames.push({
+        filename: simplifyFilename(match[2]),
+        lineNo: match[3],
+        funcName: match[1],
+      });
+    }
+  }
+  return {
+    calls: calls
+  };
+}
+function causeway_transform_opera_stack(ex) {
+  // XXX use the pub domain regex impl from
+  //   https://github.com/eriwen/javascript-stacktrace/blob/master/stacktrace.js
+  throw Error("XXX");
+}
+
+function causeway_capture_v8_stack(constructorOpt) {
+  var ex = {};
+  Error.captureStackTrace(ex, constructorOpt);
+  return causeway_transform_stack(ex);
+}
+function causeway_capture_spidermonkey_stack() {
+  try {
+    throw new Error();
+  }
+  catch (ex) {
+    return causeway_transform_stack(ex);
+  }
+}
+function causeway_capture_opera_stack(ex) {
+  try {
+    throw new Error();
+  }
+  catch (ex) {
+    return causeway_transform_stack(ex);
+  }
+}
+
+exports.loggingEnableCauseway = function(options) {
+  options = options || {};
+
+  trace_defer = causeway_trace_defer;
+  trace_resolve = causeway_trace_resolve;
+  trace_reject = causeway_trace_reject;
+  trace_exception = causeway_trace_exception;
+  trace_send_issue = causeway_trace_send_issue;
+  trace_before_run = causeway_trace_before_run;
+  trace_after_run = causeway_trace_after_run;
+
+  // (V8 or clobbered to resemble V8)
+  if ("captureStackTrace" in Error) {
+    causeway_capture_stack = causeway_capture_v8_stack;
+    causeway_transform_stack = causeway_transform_v8_stack;
+  }
+  // other (spidermonkey or opera 11+)
+  else {
+    var ex = null;
+    try {
+      throw new Error();
+    }
+    catch (e) {
+      ex = e;
+    }
+
+    // spidermonkey
+    if (typeof(ex.stack) === "string") {
+      causeway_capture_stack = causeway_capture_spidermonkey_stack;
+      causeway_transform_stack = causeway_transform_spidermonkey_stack;
+    }
+    // opera
+    else if (typeof(ex.stacktrace) === "string") {
+      causeway_capture_stack = causeway_capture_opera_stack;
+      causeway_transform_stack = causeway_transform_opera_stack;
+    }
+    else {
+      throw new Error("Unable to figure out stack trace mechanism.");
+    }
+  }
+  // Callers may already have their own prepareStackTrace in effect; we don't
+  // want to stomp on that or cause its value to continually change, so allow
+  // them to provide a helper transformation function.
+  if ("transformStack" in options) {
+    causeway_transform_stack = options.transformStack;
+  }
+  // Overwrite the prepareStackTrace, sketchy.
+  else if (causeway_capture_stack === causeway_capture_v8_stack) {
+    Error.prepareStackTrace = function(ex, stack) {
+      return stack;
+    };
+  }
+
+  causeway_log = [];
+};
+
+exports.causewayResetLog = function() {
+  var oldLog = causeway_log;
+  causeway_log = [];
+  return oldLog;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// Friendly Logging Support
+
+var friendly_unhandled_rejection_handler = null,
+    friendly_unresolved_deferreds = null;
+function friendly_trace_defer(deferred, annotation) {
+  if (friendly_unresolved_deferreds) {
+    deferred.annotation = annotation;
+    friendly_unresolved_deferreds.push(deferred);
+  }
+}
+function friendly_trace_resolve(deferred, value, pending) {
+  if (friendly_unresolved_deferreds) {
+    var index = friendly_unresolved_deferreds.indexOf(deferred);
+    if (index !== -1)
+      friendly_unresolved_deferreds.splice(index, 1);
+  }
+  if (isRejected(value) && pending.length === 0) {
+    friendly_unhandled_rejection_handler(value.valueOf().reason);
+  }
+}
+
+function friendly_throw(ex) {
+  throw ex;
+}
+
+/**
+ * Enable warnings when a promise is rejected but there is nothing listening.
+ *
+ * Other possibilities:
+ * - Track unresolved deferreds, be able to regurgitate a list of them at any
+ *   point, possibly with backtraces / chaining.
+ */
+exports.loggingEnableFriendly = function(options) {
+  exports.loggingDisable();
+  friendly_unhandled_rejection_handler = null;
+  friendly_unresolved_deferreds = null;
+
+  function checkOpt(name) {
+    return ((name in options) && !!options[name]);
+  }
+
+  if (checkOpt("unhandledRejections")) {
+    trace_resolve = friendly_trace_resolve;
+    if (typeof(options.unhandledRejections) === 'function')
+      friendly_unhandled_rejection_handler = options.unhandledRejections;
+    else if (options.unhandledRejections === 'log')
+      friendly_unhandled_rejection_handler = console.error.bind(console);
+    else
+      friendly_unhandled_rejection_handler = friendly_throw;
+  }
+  if (checkOpt("trackLive")) {
+    trace_defer = friendly_trace_defer;
+    trace_resolve = friendly_trace_resolve;
+    friendly_unresolved_deferreds = [];
+  }
+};
+
+/**
+ * Return the list of unresolved deferreds at this point.  Optionally, reset
+ * clear the list so that these deferreds are not returned in the next call
+ * to this function regardless of whether they become resolved or not.
+ */
+exports.friendlyUnresolvedDeferreds = function(reset) {
+  var unresolvedAnnotations = [];
+  for (var i = 0; i < friendly_unresolved_deferreds.length; i++) {
+    unresolvedAnnotations.push(friendly_unresolved_deferreds[i].annotation);
+  }
+  if (reset)
+    friendly_unresolved_deferreds = [];
+  return unresolvedAnnotations;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// Custom Logging Support
+
+exports.loggingEnableCustom = function() {
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
+
 /**
  * Constructs a {promise, resolve} object.
  *
@@ -148,7 +534,7 @@ exports.nextTick = nextTick;
  */
 exports.defer = defer;
 
-function defer() {
+function defer(annotation) {
     // if "pending" is an "Array", that indicates that the promise has not yet
     // been resolved.  If it is "undefined", it has been resolved.  Each
     // element of the pending array is itself an array of complete arguments to
@@ -161,12 +547,18 @@ function defer() {
     var promise = create(Promise.prototype);
 
     promise.promiseSend = function () {
-        var args = slice.call(arguments);
+        var args = slice.call(arguments), trace_context;
+        if (trace_send_issue)
+            trace_context = trace_send_issue(deferred, value, args);
         if (pending) {
             pending.push(args);
         } else {
             nextTick(function () {
+                if (trace_before_run)
+                    trace_before_run(trace_context, deferred, value, args);
                 value.promiseSend.apply(value, args);
+                if (trace_after_run)
+                    trace_after_run(trace_context, deferred, value, args);
             });
         }
     };
@@ -178,13 +570,19 @@ function defer() {
     };
 
     var resolve = function (resolvedValue) {
-        var i, ii, task;
+        var i, ii, task, trace_context;
         if (!pending)
             return;
         value = ref(resolvedValue);
+        if (trace_resolve)
+            trace_context = trace_resolve(deferred, value, pending);
         reduce.call(pending, function (undefined, pending) {
             nextTick(function () {
+                if (trace_before_run)
+                    trace_before_run(trace_context, deferred, value);
                 value.promiseSend.apply(value, pending);
+                if (trace_after_run)
+                    trace_after_run(trace_context, deferred, value);
             });
         }, void 0);
         pending = void 0;
@@ -194,8 +592,13 @@ function defer() {
     deferred.promise = freeze(promise);
     deferred.resolve = resolve;
     deferred.reject = function (reason) {
+        if (trace_reject)
+            trace_reject(deferred, reason);
         return resolve(reject(reason));
     };
+
+    if (trace_defer)
+        trace_defer(deferred, annotation);
 
     return deferred;
 }
@@ -496,8 +899,8 @@ function view(object) {
  * @return promise for the return value from the invoked callback
  */
 exports.when = when;
-function when(value, fulfilled, rejected) {
-    var deferred = defer();
+function when(value, fulfilled, rejected, annotation) {
+    var deferred = defer(annotation);
     var done = false;   // ensure the untrusted promise makes at most a
                         // single call to one of the callbacks
 
@@ -505,6 +908,8 @@ function when(value, fulfilled, rejected) {
         try {
             return fulfilled ? fulfilled(value) : value;
         } catch (exception) {
+            if (trace_exception)
+                trace_exception(deferred, exception, 'resolve', value);
             return reject(exception);
         }
     }
@@ -513,6 +918,8 @@ function when(value, fulfilled, rejected) {
         try {
             return rejected ? rejected(reason) : reject(reason);
         } catch (exception) {
+            if (trace_exception)
+                trace_exception(deferred, exception, 'reject', reason);
             return reject(exception);
         }
     }
@@ -725,12 +1132,12 @@ exports.keys = Method("keys");
 // By Mark Miller
 // http://wiki.ecmascript.org/doku.php?id=strawman:concurrency&rev=1308776521#allfulfilled
 exports.all = all;
-function all(promises) {
+function all(promises, annotation) {
     return when(promises, function (promises) {
         var countDown = promises.length;
         if (countDown === 0)
             return ref(promises);
-        var deferred = defer();
+        var deferred = defer(annotation);
         reduce.call(promises, function (undefined, promise, index) {
             when(promise, function (value) {
                 promises[index] = value;
@@ -762,7 +1169,7 @@ function fail(promise, rejected) {
  * regardless of whether the promise is fulfilled or rejected.  Forwards
  * the resolution to the returned promise when the callback is done.
  * The callback can return a promise to defer completion.
- * @param {Any*} promise 
+ * @param {Any*} promise
  * @param {Function} callback to observe the resolution of the given
  * promise, takes no arguments.
  * @returns a promise for the resolution of the given promise when
