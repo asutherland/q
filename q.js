@@ -900,10 +900,12 @@ function view(object) {
  * @param value     promise or immediate reference to observe
  * @param fulfilled function to be called with the fulfilled value
  * @param rejected  function to be called with the rejection reason
+ * @param progress  unused function to be called with progress updates
+ * @param annotation an object to identify/name the created promise
  * @return promise for the return value from the invoked callback
  */
 exports.when = when;
-function when(value, fulfilled, rejected, annotation) {
+function when(value, fulfilled, rejected, progress, annotation) {
     var deferred = defer(annotation);
     var done = false;   // ensure the untrusted promise makes at most a
                         // single call to one of the callbacks

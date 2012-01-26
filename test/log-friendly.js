@@ -52,7 +52,7 @@ exports['test track unresolved promises'] = function(assert, done) {
                    'A immediately resolved');
 
   var X = Q.defer('X'),
-      Y = Q.when(X.promise, function() {}, function() {}, 'Y');
+      Y = Q.when(X.promise, function() {}, function() {}, null, 'Y');
   assert.deepEqual(Q.friendlyUnresolvedDeferreds(), ['X', 'Y'],
                    'X, Y immediately unresolved');
 

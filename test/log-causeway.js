@@ -49,7 +49,7 @@ exports['test cake baking example'] = function(assert, done) {
     // should backlink to mixed
     var baked = Q.when(mixed, bake);
     // should backlink to baked
-    var iced = Q.when(baked, ice, null, "cake");
+    var iced = Q.when(baked, ice, null, null, "cake");
 
     return iced;
   }
