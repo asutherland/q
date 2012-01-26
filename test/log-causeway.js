@@ -11,17 +11,17 @@ exports['test cake baking example'] = function(assert, done) {
     if (!fresh) {
       // send our primary butler to the store
       var ingredients = Q.defer("ingredients");
-      enqueue(function() { ingredients.resolve(["milk", "eggs"]); });
+      enqueue(function() { ingredients.resolve(["milk!", "eggs!"]); });
       return ingredients.promise;
     }
 
     // send our primary butler to the dairy
     var milk = Q.defer("milk");
-    enqueue(function() { milk.resolve("milk"); });
+    enqueue(function() { milk.resolve("milk!"); });
 
     // send our secondary butler to the eggery
     var eggs = Q.defer("eggs");
-    enqueue(function() { eggs.resolve("eggs"); });
+    enqueue(function() { eggs.resolve("eggs!"); });
 
     return Q.all([milk.promise, eggs.promise], "ingredients");
   }
@@ -29,13 +29,13 @@ exports['test cake baking example'] = function(assert, done) {
   function mix(ingredients) {
     // we use a mixing machine to do most of the work; it's async...
     var mixing = Q.defer("mix");
-    enqueue(function() { mixing.resolve("batter"); });
+    enqueue(function() { mixing.resolve("batter!"); });
     return mixing.promise;
   }
 
   function bake(batter) {
     var baked = Q.defer("bake");
-    enqueue(function() { baked.resolve("fully baked cake"); });
+    enqueue(function() { baked.resolve("fully baked cake!"); });
     return baked.promise;
   }
 

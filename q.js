@@ -188,10 +188,12 @@ function causeway_trace_defer(deferred, annotation) {
 var CAUSEWAY_RESOLVED_CLASSES = ["org.ref_send.log.Fulfilled",
                                  "org.ref_send.log.Resolved",
                                  "org.ref_send.log.Event"];
-function causeway_trace_resolve(deferred, value) {
+function causeway_trace_resolve(deferred, value, pending, stopStacktraceAt) {
+  var trace_context = ['M' + causeway_id++,
+                       causeway_capture_stack(stopStacktraceAt)];
   // if this deferred was rejected, this is not a fulfillment
   if (deferred._causeway_done)
-    return ['M' + causeway_id++, causeway_capture_stack()];
+    return trace_context;
   causeway_log.push({
     "class": CAUSEWAY_RESOLVED_CLASSES,
     anchor: {
@@ -202,15 +204,15 @@ function causeway_trace_resolve(deferred, value) {
       }
     },
     timestamp: Date.now(),
-    trace: causeway_capture_stack(),
+    trace: trace_context[1],
     condition: deferred._causeway_id
   });
-  return ['M' + causeway_id++, causeway_capture_stack()];
+  return trace_context;
 }
 var CAUSEWAY_REJECTED_CLASSES = ["org.ref_send.log.Rejected",
                                  "org.ref_send.log.Resolved",
                                  "org.ref_send.log.Event"];
-function causeway_trace_reject(deferred, reason) {
+function causeway_trace_reject(deferred, reason, stopStacktraceAt) {
   deferred._causeway_done = true;
   causeway_log.push({
     "class": CAUSEWAY_REJECTED_CLASSES,
@@ -222,7 +224,7 @@ function causeway_trace_reject(deferred, reason) {
       }
     },
     timestamp: Date.now(),
-    trace: causeway_capture_stack(),
+    trace: causeway_capture_stack(stopStacktraceAt),
     condition: deferred._causeway_id,
     reason: causeway_normalize_reason(reason)
   });
@@ -250,8 +252,9 @@ function causeway_trace_exception(deferred, exception, during, value) {
 }
 var CAUSEWAY_SENT_CLASSES = ["org.ref_send.log.Sent",
                              "org.ref_send.log.Event"];
-function causeway_trace_send_issue(deferred, value, args) {
-  var msgId = 'M' + causeway_id++, stack = causeway_capture_stack(), rec;
+function causeway_trace_send_issue(deferred, value, args, stopStacktraceAt) {
+  var msgId = 'M' + causeway_id++,
+      stack = causeway_capture_stack(stopStacktraceAt), rec;
   causeway_log.push(rec = {
     "class": CAUSEWAY_SENT_CLASSES,
     anchor: {
@@ -359,7 +362,7 @@ function causeway_transform_opera_stack(ex) {
 
 function causeway_capture_v8_stack(constructorOpt) {
   var ex = {};
-  Error.captureStackTrace(ex, constructorOpt);
+  Error.captureStackTrace(ex, constructorOpt || causeway_capture_v8_stack);
   return causeway_transform_stack(ex);
 }
 function causeway_capture_spidermonkey_stack() {
@@ -370,7 +373,7 @@ function causeway_capture_spidermonkey_stack() {
     return causeway_transform_stack(ex);
   }
 }
-function causeway_capture_opera_stack(ex) {
+function causeway_capture_opera_stack() {
   try {
     throw new Error();
   }
@@ -549,7 +552,8 @@ function defer(annotation) {
     promise.promiseSend = function () {
         var args = slice.call(arguments), trace_context;
         if (trace_send_issue)
-            trace_context = trace_send_issue(deferred, value, args);
+            trace_context = trace_send_issue(deferred, value, args,
+                                             promise.promiseSend);
         if (pending) {
             pending.push(args);
         } else {
@@ -575,7 +579,7 @@ function defer(annotation) {
             return;
         value = ref(resolvedValue);
         if (trace_resolve)
-            trace_context = trace_resolve(deferred, value, pending);
+            trace_context = trace_resolve(deferred, value, pending, resolve);
         reduce.call(pending, function (undefined, pending) {
             nextTick(function () {
                 if (trace_before_run)
@@ -593,7 +597,7 @@ function defer(annotation) {
     deferred.resolve = resolve;
     deferred.reject = function (reason) {
         if (trace_reject)
-            trace_reject(deferred, reason);
+            trace_reject(deferred, reason, deferred.reject);
         return resolve(reject(reason));
     };
 
