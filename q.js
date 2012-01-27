@@ -448,9 +448,12 @@ exports.causewayResetLog = function() {
 // Friendly Logging Support
 
 var friendly_unhandled_rejection_handler = null,
-    friendly_unresolved_deferreds = null;
+    friendly_unresolved_deferreds = null,
+    friendly_annotation_generator = null;
 function friendly_trace_defer(deferred, annotation) {
   if (friendly_unresolved_deferreds) {
+    if (!annotation && friendly_annotation_generator)
+      annotation = friendly_annotation_generator();
     deferred.annotation = annotation;
     friendly_unresolved_deferreds.push(deferred);
   }
@@ -481,6 +484,7 @@ exports.loggingEnableFriendly = function(options) {
   exports.loggingDisable();
   friendly_unhandled_rejection_handler = null;
   friendly_unresolved_deferreds = null;
+  friendly_annotation_generator = null;
 
   function checkOpt(name) {
     return ((name in options) && !!options[name]);
@@ -499,6 +503,9 @@ exports.loggingEnableFriendly = function(options) {
     trace_defer = friendly_trace_defer;
     trace_resolve = friendly_trace_resolve;
     friendly_unresolved_deferreds = [];
+
+    if (typeof(options.trackLive) === 'function')
+      friendly_annotation_generator = options.trackLive;
   }
 };
 
@@ -1149,8 +1156,8 @@ function all(promises, annotation) {
                 promises[index] = value;
                 if (--countDown === 0)
                     deferred.resolve(promises);
-            })
-            .fail(deferred.reject)
+            }, void 0, void 0, "Q:all")
+            .fail(deferred.reject);
         }, void 0);
         return deferred.promise;
     });
@@ -1167,7 +1174,7 @@ function all(promises, annotation) {
  */
 exports.fail = fail;
 function fail(promise, rejected) {
-    return when(promise, void 0, rejected);
+    return when(promise, void 0, rejected, void 0, "Q:fail");
 }
 
 /**
