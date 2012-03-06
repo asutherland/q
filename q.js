@@ -499,6 +499,27 @@ exports.loggingEnableFriendly = function(options) {
     else
       friendly_unhandled_rejection_handler = friendly_throw;
   }
+  if (checkOpt("exceptions")) {
+    if (typeof(options.exceptions) === 'function')
+      trace_exception = function(deferred, exception, where, value) {
+        options.exceptions(exception, where);
+      };
+    else
+      trace_exception = function(deferred, exception, where, value) {
+        console.error("exception in '" + where + "'", exception);
+      };
+  }
+  if (checkOpt("rejections")) {
+    if (typeof(options.rejections) === 'function')
+      trace_reject = function(deferred, reason, alreadyResolved) {
+        options.rejections(reason, alreadyResolved);
+      };
+    else
+      trace_reject = function(deferred, reason, alreadyResolved) {
+        console.trace((alreadyResolved ? "already resolved " : "") +
+          "rejection:", reason);
+      };
+  }
   if (checkOpt("trackLive")) {
     trace_defer = friendly_trace_defer;
     trace_resolve = friendly_trace_resolve;
@@ -604,7 +625,7 @@ function defer(annotation) {
     deferred.resolve = resolve;
     deferred.reject = function (reason) {
         if (trace_reject)
-            trace_reject(deferred, reason, deferred.reject);
+            trace_reject(deferred, reason, !pending);
         return resolve(reject(reason));
     };
 
@@ -659,6 +680,8 @@ function Promise(descriptor, fallback, valueOf) {
                 result = fallback.apply(descriptor, [op].concat(args));
             }
         } catch (exception) {
+            if (trace_exception)
+                trace_exception(deferred, exception, 'promiseSend', args);
             result = reject(exception);
         }
         return (resolved || identity)(result);
